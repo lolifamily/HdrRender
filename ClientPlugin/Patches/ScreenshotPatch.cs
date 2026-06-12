@@ -24,7 +24,8 @@ internal static class ScreenshotPatch
             return false;
 
         var screenshot = MyRender11.m_screenshot.Value;
-        var pngPath = screenshot.SavePath;
+        var savePath = screenshot.SavePath;
+        var format = screenshot.Format;
         var showNotification = screenshot.ShowNotification;
         MyRender11.m_screenshot = null;
 
@@ -33,7 +34,7 @@ internal static class ScreenshotPatch
             if (res.Resource is not Texture2D texture)
             {
                 VRage.Utils.MyLog.Default.WriteLine("HDR: Screenshot failed - resource is not Texture2D");
-                MyRenderProxy.ScreenshotTaken(false, pngPath, showNotification);
+                MyRenderProxy.ScreenshotTaken(false, savePath, showNotification);
                 return false;
             }
 
@@ -77,18 +78,18 @@ internal static class ScreenshotPatch
             }
 
             var paperWhite = Config.Current.PaperWhite;
-            Task.Run(() => SaveInBackground(pngPath, pixelBuffer, rowPitch, w, h, showNotification, paperWhite));
+            Task.Run(() => SaveInBackground(savePath, format, pixelBuffer, rowPitch, w, h, showNotification, paperWhite));
         }
         catch (Exception e)
         {
             VRage.Utils.MyLog.Default.WriteLine($"HDR: Screenshot failed: {e}");
-            MyRenderProxy.ScreenshotTaken(false, pngPath, showNotification);
+            MyRenderProxy.ScreenshotTaken(false, savePath, showNotification);
         }
 
         return false;
     }
 
-    private static unsafe void SaveInBackground(string pngPath, byte[] pixelBuffer, int rowPitch, int w, int h, bool showNotification, float paperWhite)
+    private static unsafe void SaveInBackground(string savePath, MyImage.FileFormat format, byte[] pixelBuffer, int rowPitch, int w, int h, bool showNotification, float paperWhite)
     {
         var success = false;
         try
@@ -96,19 +97,31 @@ internal static class ScreenshotPatch
             fixed (byte* ptr = pixelBuffer)
             {
                 var dataPtr = (IntPtr)ptr;
-                var exrFile = new FileInfo(Path.ChangeExtension(pngPath, ".exr"));
-                exrFile.Directory?.Create();
+                if (format == MyImage.FileFormat.Png)
+                {
+                    // Png is the user-screenshot path (F4, blueprints — the game itself
+                    // never asks for anything else): keep the HDR original as EXR.
+                    var exrFile = new FileInfo(Path.ChangeExtension(savePath, ".exr"));
+                    exrFile.Directory?.Create();
 
-                Parallel.Invoke(
-                    () =>
-                    {
-                        using var fs = exrFile.Create();
-                        ExrWriter.Write(fs, dataPtr, rowPitch, w, h);
-                    },
-                    () => SaveSdrPng(pngPath, dataPtr, rowPitch, w, h, paperWhite));
+                    Parallel.Invoke(
+                        () =>
+                        {
+                            using var fs = exrFile.Create();
+                            ExrWriter.Write(fs, dataPtr, rowPitch, w, h);
+                        },
+                        () => SaveSdr(savePath, format, dataPtr, rowPitch, w, h, paperWhite));
 
-                VRage.Utils.MyLog.Default.WriteLine($"HDR: EXR saved to {exrFile.FullName}");
-                VRage.Utils.MyLog.Default.WriteLine($"HDR: PNG saved to {pngPath}");
+                    VRage.Utils.MyLog.Default.WriteLine($"HDR: EXR saved to {exrFile.FullName}");
+                }
+                else
+                {
+                    // Jpg/Bmp can only come from programmatic callers: honor the
+                    // requested format, no EXR side product next to a temp file.
+                    SaveSdr(savePath, format, dataPtr, rowPitch, w, h, paperWhite);
+                }
+
+                VRage.Utils.MyLog.Default.WriteLine($"HDR: {format} saved to {savePath}");
                 success = true;
             }
         }
@@ -118,11 +131,11 @@ internal static class ScreenshotPatch
         }
         finally
         {
-            MyRenderProxy.ScreenshotTaken(success, pngPath, showNotification);
+            MyRenderProxy.ScreenshotTaken(success, savePath, showNotification);
         }
     }
 
-    private static unsafe void SaveSdrPng(string path, IntPtr pixelData, int rowPitch, int width, int height, float paperWhite)
+    private static unsafe void SaveSdr(string path, MyImage.FileFormat format, IntPtr pixelData, int rowPitch, int width, int height, float paperWhite)
     {
         // BT.2446 Method A style: paper_white is the SDR "graphic white" anchor.
         // - Below knee:  pure linear pass-through of (HDR / paper_white) to preserve midtones.
@@ -173,7 +186,7 @@ internal static class ScreenshotPatch
         fixed (byte* ptr = sdr)
         {
             using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
-            MyImage.Save<Rgba32>(fs, MyImage.FileFormat.Png, (IntPtr)ptr, width * 4, new Vector2I(width, height), 4);
+            MyImage.Save<Rgba32>(fs, format, (IntPtr)ptr, width * 4, new Vector2I(width, height), 4);
         }
     }
 
