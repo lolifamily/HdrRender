@@ -183,7 +183,10 @@ float3 apply_vibrance(float3 rgb)
     float lum = get_relative_luminance(rgb);
     float minc = min(min(rgb.r, rgb.g), rgb.b);
     float maxc = max(max(rgb.r, rgb.g), rgb.b);
-    float sat = maxc - minc;
+    // Clamp to the SDR [0,1] range the vibrance curve is designed for. In
+    // paper-white-normalized space a bright saturated highlight
+    // can have maxc-minc > 1, which drives s outside valid range.
+    float sat = saturate(maxc - minc);
     float s = 1.0 + (vibrance * (1.0 - (sign(vibrance) * sat)));
     return lerp(lum, rgb, s);
 }
