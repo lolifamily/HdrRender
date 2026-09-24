@@ -29,24 +29,28 @@ internal static class ExrWriter
         var rawLineSize = bytesPerChannel * ChannelCount;
 
         // Stage 1: each chunk's ExtractBgr+ZlibCompress is independent. Parallelize.
-        var compressedChunks = new byte[chunkCount][];
+        var chunkData = new byte[chunkCount][];
         Parallel.For(0, chunkCount, chunk =>
         {
             var yStart = chunk * ZipBlockLines;
             var linesInChunk = Math.Min(ZipBlockLines, height - yStart);
             var raw = new byte[linesInChunk * rawLineSize];
             ExtractBgr(pixelData, rowPitch, width, yStart, linesInChunk, raw);
-            compressedChunks[chunk] = ZlibCompress(raw);
+            // Like OpenEXR's own writer, a chunk that compression doesn't shrink is stored as is. Readers tell the
+            // two apart by size alone - a chunk not smaller than its uncompressed size is read as raw data - so a
+            // compressed chunk that grew would be decoded as garbage.
+            var packed = ZlibCompress(raw);
+            chunkData[chunk] = packed.Length < raw.Length ? packed : raw;
         });
 
         // Stage 2: must write chunks in order so stream offsets are correct.
         for (var chunk = 0; chunk < chunkCount; chunk++)
         {
             offsets[chunk] = output.Position;
-            var compressed = compressedChunks[chunk];
+            var data = chunkData[chunk];
             bw.Write(chunk * ZipBlockLines);
-            bw.Write(compressed.Length);
-            bw.Write(compressed);
+            bw.Write(data.Length);
+            bw.Write(data);
         }
 
         output.Seek(offsetTablePos, SeekOrigin.Begin);

@@ -18,10 +18,12 @@ internal static class HdrResources
     public static bool Initialized { get; private set; }
 
     public static ComputeShader TonemapComputeShader { get; private set; }
-    public static VertexShader UiCompositeVertexShader { get; private set; }
-    public static PixelShader UiCompositePixelShader { get; private set; }
+    public static ComputeShader ChromaticAberrationComputeShader { get; private set; }
+    public static PixelShader OutputCopyPixelShader { get; private set; }
+    public static PixelShader OutputFilterPixelShader { get; private set; }
     public static IConstantBuffer HdrConstantBuffer { get; private set; }
-    public static IConstantBuffer UiConstantBuffer { get; private set; }
+    public static IConstantBuffer ChromaticConstantBuffer { get; private set; }
+    public static IConstantBuffer OutputConstantBuffer { get; private set; }
 
     private static string _shadersPath;
 
@@ -40,16 +42,22 @@ internal static class HdrResources
         var device = MyRender11.DeviceInstance;
 
         TonemapComputeShader = CompileCompute(device, "HdrTonemap.hlsl", "cs_main");
-        UiCompositeVertexShader = CompileVertex(device, "UiComposite.hlsl", "vs_main");
-        UiCompositePixelShader = CompilePixel(device, "UiComposite.hlsl", "ps_main");
+        ChromaticAberrationComputeShader = CompileCompute(device, "ChromaticAberration.hlsl", "cs_main");
+        OutputCopyPixelShader = CompilePixel(device, "OutputEncode.hlsl", "ps_copy");
+        OutputFilterPixelShader = CompilePixel(device, "OutputEncode.hlsl", "ps_filter");
 
         HdrConstantBuffer = MyManagers.Buffers.CreateConstantBuffer(
             "HdrOutput.HdrConstants",
             Utilities.SizeOf<Patches.TonemapPatch.HdrConstants>(),
             usage: ResourceUsage.Dynamic);
 
-        UiConstantBuffer = MyManagers.Buffers.CreateConstantBuffer(
-            "HdrOutput.UiConstants",
+        ChromaticConstantBuffer = MyManagers.Buffers.CreateConstantBuffer(
+            "HdrOutput.ChromaticConstants",
+            Utilities.SizeOf<Patches.ChromaticAberrationPatch.ChromaticConstants>(),
+            usage: ResourceUsage.Dynamic);
+
+        OutputConstantBuffer = MyManagers.Buffers.CreateConstantBuffer(
+            "HdrOutput.OutputConstants",
             16,
             usage: ResourceUsage.Dynamic);
     }
@@ -63,20 +71,27 @@ internal static class HdrResources
     {
         TonemapComputeShader?.Dispose();
         TonemapComputeShader = null;
-        UiCompositeVertexShader?.Dispose();
-        UiCompositeVertexShader = null;
-        UiCompositePixelShader?.Dispose();
-        UiCompositePixelShader = null;
+        ChromaticAberrationComputeShader?.Dispose();
+        ChromaticAberrationComputeShader = null;
+        OutputCopyPixelShader?.Dispose();
+        OutputCopyPixelShader = null;
+        OutputFilterPixelShader?.Dispose();
+        OutputFilterPixelShader = null;
 
         if (HdrConstantBuffer != null)
         {
             MyManagers.Buffers.Dispose(HdrConstantBuffer);
             HdrConstantBuffer = null;
         }
-        if (UiConstantBuffer != null)
+        if (ChromaticConstantBuffer != null)
         {
-            MyManagers.Buffers.Dispose(UiConstantBuffer);
-            UiConstantBuffer = null;
+            MyManagers.Buffers.Dispose(ChromaticConstantBuffer);
+            ChromaticConstantBuffer = null;
+        }
+        if (OutputConstantBuffer != null)
+        {
+            MyManagers.Buffers.Dispose(OutputConstantBuffer);
+            OutputConstantBuffer = null;
         }
 
         Initialized = false;
@@ -86,12 +101,6 @@ internal static class HdrResources
     {
         using var bc = Compile(file, entry, "cs_5_0");
         return new ComputeShader(device, bc);
-    }
-
-    private static VertexShader CompileVertex(SharpDX.Direct3D11.Device device, string file, string entry)
-    {
-        using var bc = Compile(file, entry, "vs_5_0");
-        return new VertexShader(device, bc);
     }
 
     private static PixelShader CompilePixel(SharpDX.Direct3D11.Device device, string file, string entry)

@@ -5,9 +5,11 @@ using VRageRender;
 
 namespace ClientPlugin.Patches;
 
-// Boost emissive LDR billboards (thrusters, lasers, muzzle flashes) by a user-chosen
-// factor K. Producer encodes emissive intent via ColorIntensity > 1; diffuse / UI
-// billboards keep ColorIntensity = 1 (default) and are never touched.
+// Boost emissive billboards (thruster and jetpack flames) by a user-chosen factor K.
+// They are drawn into the LBuffer (Standard / Additive buckets) and tone mapped with
+// the scene, so K multiplies scene light. Producer encodes emissive intent via
+// ColorIntensity > 1; diffuse billboards and the post-tonemap LDR / PostPP overlays
+// keep ColorIntensity = 1 (default) and are never touched.
 //
 // We hook MyBillboardRenderer.Gather and mutate ColorIntensity on every MyBillboard
 // the renderer is about to read, then restore it in a Finalizer so producers and

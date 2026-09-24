@@ -36,7 +36,7 @@ public class Config : INotifyPropertyChanged
     [UsedImplicitly]
     public string DisplayInfo => Plugin.StatusInfo ?? "";
 
-    [Checkbox(description: "Force HDR on non-HDR displays — requires restart (you know what you're doing!)")]
+    [Checkbox(description: "Force HDR on a non-HDR display. Experts only; requires restart.")]
     public bool ForceEnable
     {
         get;
@@ -44,7 +44,7 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = false;
 
-    [Slider(200f, 2500f, 50f, description: "Display peak brightness in nits")]
+    [Slider(200f, 2500f, 50f, description: "Display peak brightness in nits. The reported value is shown above.")]
     public float PeakBrightness
     {
         get;
@@ -52,23 +52,34 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = 1000f;
 
-    [Slider(80f, 500f, 10f, description: "UI / paper-white brightness in nits (sRGB reference white)")]
-    public float PaperWhite
+    [Slider(80f, 500f, 10f, description: "Game world brightness in nits: where SDR white lands. Highlights go above it up to peak. BT.2408: 203.")]
+    public float ScenePaperWhite
     {
         get;
         [UsedImplicitly]
         set => SetField(ref field, value);
     } = 200f;
 
-    [Slider(1000f, 10000f, 100f, description: "Expected scene peak luminance in nits (BT.2390 source peak). KS auto-derived from display/source ratio. Default 5000 fits SE suns / engine plumes. Set lower for SDR-like content, higher to preserve more highlight detail above peak.")]
-    public float SourcePeak
+    // Serialized as <PaperWhite>: that setting only ever drove the UI composite, so
+    // existing configs already hold the UI brightness there.
+    [XmlElement("PaperWhite")]
+    [Slider(40f, 500f, 10f, label: "UI brightness", description: "Menus, HUD and in-world overlays (block highlight, gizmos, crosshair) in nits. Independent of paper white.")]
+    public float UiBrightness
     {
         get;
         [UsedImplicitly]
         set => SetField(ref field, value);
-    } = 5000f;
+    } = 200f;
 
-    [Slider(0f, 0.05f, 0.002f, description: "Black floor lift (BT.2390 black boost, now in PQ space - standard range). Raises near-black detail. 0 = off (recommended for OLED real black).")]
+    [Slider(4f, 8f, 0.5f, description: "Stops above average scene brightness that keep highlight detail; brighter content sits at peak. Lower it on dim displays: 4 for 400 nits.")]
+    public float HighlightRange
+    {
+        get;
+        [UsedImplicitly]
+        set => SetField(ref field, value);
+    } = 6f;
+
+    [Slider(0f, 0.05f, 0.002f, description: "Raises near-black detail (BT.2390 black lift). 0 = off, best for OLED.")]
     public float BlackLift
     {
         get;
@@ -76,7 +87,9 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = 0.0f;
 
-    [Slider(1f, 16f, 0.5f, description: "Emissive LDR billboard boost (thrusters, lasers, muzzle flashes). Diffuse / UI unaffected. 1.0 = original look.")]
+    // Name kept so existing configs keep their value. These are emissive billboards and
+    // GPU particles in the scene, not the engine's post-tonemap LDR billboard bucket.
+    [Slider(1f, 16f, 0.5f, label: "Emissive boost", description: "Brightens thruster flames, muzzle flashes and other emissive effects. 1 = original.")]
     public float LdrIntensity
     {
         get;
@@ -85,7 +98,7 @@ public class Config : INotifyPropertyChanged
     } = 1.0f;
 
     [Separator("Advanced")]
-    [Checkbox(description: "Use R16G16B16A16 lighting buffer (doubles LBuffer/Bloom VRAM, sharper gradients for HDR)")]
+    [Checkbox(description: "16-bit lighting buffer: smoother HDR gradients, more VRAM.")]
     public bool HqTarget
     {
         get;
@@ -93,7 +106,7 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = true;
 
-    [Checkbox(description: "Enable variable refresh rate in windowed mode — requires restart. Needs G-Sync/FreeSync display, otherwise causes visible tearing. Auto-disabled if driver lacks support.")]
+    [Checkbox(description: "Variable refresh rate in windowed mode. Needs G-Sync/FreeSync, otherwise tears. Requires restart.")]
     public bool AllowTearing
     {
         get;
@@ -101,7 +114,7 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = false;
 
-    [Checkbox(description: "Lower input latency by capping GPU frame queue to 1 (default 3). May cause stutter when GPU is bottlenecked (large grids, dense effects).")]
+    [Checkbox(description: "Caps the GPU frame queue at 1 for lower input latency. May stutter when GPU-bound.")]
     public bool LowLatencyMode
     {
         get;
@@ -109,7 +122,7 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = false;
 
-    [Checkbox(description: "Auto-set when the plugin crashes during first-frame init (swapchain replacement, shader load, etc). Uncheck to retry HDR on next launch.")]
+    [Checkbox(description: "Set automatically after an init crash. Uncheck to retry HDR on next launch.")]
     public bool DisabledAfterCrash
     {
         get;

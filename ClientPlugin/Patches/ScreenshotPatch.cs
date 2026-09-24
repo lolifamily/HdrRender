@@ -24,8 +24,7 @@ internal static class ScreenshotPatch
             return false;
 
         var screenshot = MyRender11.m_screenshot.Value;
-        var savePath = screenshot.SavePath;
-        var format = screenshot.Format;
+        var path = screenshot.SavePath;
         var showNotification = screenshot.ShowNotification;
         MyRender11.m_screenshot = null;
 
@@ -34,7 +33,7 @@ internal static class ScreenshotPatch
             if (res.Resource is not Texture2D texture)
             {
                 VRage.Utils.MyLog.Default.WriteLine("HDR: Screenshot failed - resource is not Texture2D");
-                MyRenderProxy.ScreenshotTaken(false, savePath, showNotification);
+                MyRenderProxy.ScreenshotTaken(false, path, showNotification);
                 return false;
             }
 
@@ -77,51 +76,49 @@ internal static class ScreenshotPatch
                 ctx.UnmapSubresource(staging, 0);
             }
 
-            var paperWhite = Config.Current.PaperWhite;
-            Task.Run(() => SaveInBackground(savePath, format, pixelBuffer, rowPitch, w, h, showNotification, paperWhite));
+            // Settings the frame was rendered with, read on the render thread
+            var paperWhite = Config.Current.ScenePaperWhite;
+            var peak = Config.Current.PeakBrightness;
+            Task.Run(() => SaveInBackground(screenshot, pixelBuffer, rowPitch, w, h, paperWhite, peak));
         }
         catch (Exception e)
         {
             VRage.Utils.MyLog.Default.WriteLine($"HDR: Screenshot failed: {e}");
-            MyRenderProxy.ScreenshotTaken(false, savePath, showNotification);
+            MyRenderProxy.ScreenshotTaken(false, path, showNotification);
         }
 
         return false;
     }
 
-    private static unsafe void SaveInBackground(string savePath, MyImage.FileFormat format, byte[] pixelBuffer, int rowPitch, int w, int h, bool showNotification, float paperWhite)
+    private static unsafe void SaveInBackground(MyScreenshot screenshot, byte[] pixelBuffer, int rowPitch, int w, int h, float paperWhite, float peak)
     {
+        var path = screenshot.SavePath;
         var success = false;
         try
         {
             fixed (byte* ptr = pixelBuffer)
             {
                 var dataPtr = (IntPtr)ptr;
-                if (format == MyImage.FileFormat.Png)
-                {
-                    // Png is the user-screenshot path (F4, blueprints — the game itself
-                    // never asks for anything else): keep the HDR original as EXR.
-                    var exrFile = new FileInfo(Path.ChangeExtension(savePath, ".exr"));
-                    exrFile.Directory?.Create();
+                new FileInfo(path).Directory?.Create();
 
-                    Parallel.Invoke(
-                        () =>
-                        {
-                            using var fs = exrFile.Create();
-                            ExrWriter.Write(fs, dataPtr, rowPitch, w, h);
-                        },
-                        () => SaveSdr(savePath, format, dataPtr, rowPitch, w, h, paperWhite));
+                // The EXR is for the player's own screenshots, the ones that notify.
+                // World save / blueprint / grid thumbnails and recording frames pass
+                // showNotification: false and get only the image they asked for.
+                var exrPath = screenshot.ShowNotification ? Path.ChangeExtension(path, ".exr") : null;
 
-                    VRage.Utils.MyLog.Default.WriteLine($"HDR: EXR saved to {exrFile.FullName}");
-                }
-                else
-                {
-                    // Jpg/Bmp can only come from programmatic callers: honor the
-                    // requested format, no EXR side product next to a temp file.
-                    SaveSdr(savePath, format, dataPtr, rowPitch, w, h, paperWhite);
-                }
+                Parallel.Invoke(
+                    () =>
+                    {
+                        if (exrPath == null)
+                            return;
+                        using var fs = File.Create(exrPath);
+                        ExrWriter.Write(fs, dataPtr, rowPitch, w, h);
+                    },
+                    () => SaveSdr(path, screenshot.Format, dataPtr, rowPitch, w, h, paperWhite, peak));
 
-                VRage.Utils.MyLog.Default.WriteLine($"HDR: {format} saved to {savePath}");
+                if (exrPath != null)
+                    VRage.Utils.MyLog.Default.WriteLine($"HDR: EXR saved to {exrPath}");
+                VRage.Utils.MyLog.Default.WriteLine($"HDR: SDR saved to {path}");
                 success = true;
             }
         }
@@ -131,23 +128,25 @@ internal static class ScreenshotPatch
         }
         finally
         {
-            MyRenderProxy.ScreenshotTaken(success, savePath, showNotification);
+            MyRenderProxy.ScreenshotTaken(success, path, screenshot.ShowNotification);
         }
     }
 
-    private static unsafe void SaveSdr(string path, MyImage.FileFormat format, IntPtr pixelData, int rowPitch, int width, int height, float paperWhite)
+    // SDR preview of the HDR frame, in the frame's own terms. Normalized to the scene
+    // paper white, so that display setting drops out; everything else keeps its
+    // relation to it, and a UI dimmer than the scene stays dimmer. Like the HDR
+    // display mapping, the curve runs on max(R,G,B) and scales all channels together,
+    // which keeps hue and saturation. Below half the scene white nothing changes;
+    // above it an extended Reinhard shoulder, C1 at the knee, reaches 1.0 exactly at
+    // the HDR peak, so the whole SDR range is used.
+    private static unsafe void SaveSdr(string path, MyImage.FileFormat format, IntPtr pixelData, int rowPitch, int width, int height, float paperWhite, float peak)
     {
-        // BT.2446 Method A style: paper_white is the SDR "graphic white" anchor.
-        // - Below knee:  pure linear pass-through of (HDR / paper_white) to preserve midtones.
-        // - Above knee:  Reinhard shoulder asymptotic to 1.0 (SDR display max).
-        // knee=0.75 follows BT.2408 / Adobe "75% IRE graphic white" convention.
+        const float knee = 0.5f;
         var paperWhiteScRGB = paperWhite / 80f;
-        const float knee     = 0.75f;
-        const float delta    = 0.5f;
-        const float range    = 1f - knee;
-        // Hunt-effect correction: desaturate input when normalized luma exceeds
-        // paper_white. Same shape as hdrfix Hable: rgb_desat = lerp(rgb, luma, overbright).
-        const float desatThreshold = 1.0f;
+        // Shoulder input at the HDR peak. Only a UI set brighter than the peak goes
+        // past it, and clips at 1.0.
+        var whitePoint = Math.Max((peak / paperWhite - knee) / (1f - knee), 1e-3f);
+        var invWhiteSq = 1f / (whitePoint * whitePoint);
 
         var sdr = new byte[width * height * 4];
         var pixelDataAddr = pixelData;
@@ -160,25 +159,24 @@ internal static class ScreenshotPatch
             for (var x = 0; x < width; x++)
             {
                 var px = row + x * 4; // R16G16B16A16 = 4 x ushort per pixel
-                var rN = MathHelper.Max(HalfUtils.Unpack(px[0]), 0f) / paperWhiteScRGB;
-                var gN = MathHelper.Max(HalfUtils.Unpack(px[1]), 0f) / paperWhiteScRGB;
-                var bN = MathHelper.Max(HalfUtils.Unpack(px[2]), 0f) / paperWhiteScRGB;
+                var r = MathHelper.Max(HalfUtils.Unpack(px[0]), 0f) / paperWhiteScRGB;
+                var g = MathHelper.Max(HalfUtils.Unpack(px[1]), 0f) / paperWhiteScRGB;
+                var b = MathHelper.Max(HalfUtils.Unpack(px[2]), 0f) / paperWhiteScRGB;
 
-                // Pre-tonemap desaturation for overbright pixels.
-                var luma       = MathHelper.Max(0.2126f * rN + 0.7152f * gN + 0.0722f * bN, 1e-6f);
-                var overbright = MathHelper.Saturate((luma - desatThreshold) / luma);
-                rN = rN * (1f - overbright) + luma * overbright;
-                gN = gN * (1f - overbright) + luma * overbright;
-                bN = bN * (1f - overbright) + luma * overbright;
-
-                var r = LinearToSrgb(ToneMap(rN, knee, range, delta));
-                var g = LinearToSrgb(ToneMap(gN, knee, range, delta));
-                var b = LinearToSrgb(ToneMap(bN, knee, range, delta));
+                var m = Math.Max(r, Math.Max(g, b));
+                if (m > knee)
+                {
+                    var e = (m - knee) / (1f - knee);
+                    var scale = (knee + (1f - knee) * e * (1f + e * invWhiteSq) / (1f + e)) / m;
+                    r *= scale;
+                    g *= scale;
+                    b *= scale;
+                }
 
                 var i = lineOff + x * 4;
-                sdr[i]     = (byte)PackUtils.PackUNorm(255f, r);
-                sdr[i + 1] = (byte)PackUtils.PackUNorm(255f, g);
-                sdr[i + 2] = (byte)PackUtils.PackUNorm(255f, b);
+                sdr[i]     = (byte)PackUtils.PackUNorm(255f, LinearToSrgb(Math.Min(r, 1f)));
+                sdr[i + 1] = (byte)PackUtils.PackUNorm(255f, LinearToSrgb(Math.Min(g, 1f)));
+                sdr[i + 2] = (byte)PackUtils.PackUNorm(255f, LinearToSrgb(Math.Min(b, 1f)));
                 sdr[i + 3] = 255;
             }
         });
@@ -188,14 +186,6 @@ internal static class ScreenshotPatch
             using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
             MyImage.Save<Rgba32>(fs, format, (IntPtr)ptr, width * 4, new Vector2I(width, height), 4);
         }
-    }
-
-    private static float ToneMap(float norm, float knee, float range, float delta)
-    {
-        if (norm <= knee)
-            return norm;
-        var excess = norm - knee;
-        return knee + range * excess / (excess + delta);
     }
 
     private static float LinearToSrgb(float c) =>

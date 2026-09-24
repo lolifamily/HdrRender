@@ -1,7 +1,6 @@
 using System;
 using ClientPlugin.Rendering;
 using HarmonyLib;
-using SharpDX.Direct3D;
 using SharpDX.DXGI;
 using SharpDX.Mathematics.Interop;
 using VRage.Render11.Common;
@@ -146,36 +145,12 @@ internal static class ConsumeMainSpritesPatch
         if (uiLayer == null)
             return;
 
-        var rc = MyImmediateRC.RC;
-        var device = MyRender11.DeviceInstance;
-
-        var cfg = Config.Current;
-        var ctx = device.ImmediateContext;
-        var mapped = ctx.MapSubresource(HdrResources.UiConstantBuffer.Resource, 0,
-            SharpDX.Direct3D11.MapMode.WriteDiscard, SharpDX.Direct3D11.MapFlags.None);
-        var pw = cfg.PaperWhite / 80f;
-        SharpDX.Utilities.Write(mapped.DataPointer, ref pw);
-        ctx.UnmapSubresource(HdrResources.UiConstantBuffer.Resource, 0);
-
-        rc.SetBlendState(MyBlendStateManager.BlendAlphaPremult);
-        rc.SetInputLayout(null);
-        rc.SetPrimitiveTopology(PrimitiveTopology.TriangleList);
-        rc.SetDepthStencilState(MyDepthStencilStateManager.IgnoreDepthStencil);
-
-        rc.VertexShader.Set(HdrResources.UiCompositeVertexShader);
-        rc.PixelShader.Set(HdrResources.UiCompositePixelShader);
-        rc.PixelShader.SetConstantBuffer(0, HdrResources.UiConstantBuffer);
-        rc.PixelShader.SetSrv(0, uiLayer);
-        rc.PixelShader.SetSampler(0, MySamplerStateManager.Point);
-
-        var compositeTarget = UiOffscreenSlot.OverrideTarget ?? MyRender11.Backbuffer;
-        rc.SetRtv(compositeTarget);
-        var bbSize = compositeTarget.Size;
-        rc.SetViewport(0, 0, bbSize.X, bbSize.Y);
-        rc.Draw(3, 0);
-        rc.SetRtvNull();
-
-        rc.PixelShader.SetSrv(0, null);
+        // Premultiplied UI layer over the scene at UI brightness, see OutputEncode.hlsl
+        var target = UiOffscreenSlot.OverrideTarget ?? MyRender11.Backbuffer;
+        OutputEncode.Draw(target, uiLayer, MyBlendStateManager.BlendAlphaPremult,
+            new MyViewport(target.Size.X, target.Size.Y),
+            filter: uiLayer.Size != target.Size);
+        MyImmediateRC.RC.SetRtvNull();
 
         // Release the borrow AND null the slot in one step. Without this null, the next
         // RenderMainSprites Prefix would call Release() again on this same dead handle.

@@ -7,38 +7,47 @@ RWTexture2D<float4> destination : register(u0);
 
 SamplerState bilinear_sampler : register(s0);
 
+// Three units meet in this shader:
+//   scene-normalized     1.0 = paper white, the scene's SDR reference white
+//   scRGB                1.0 = 80 nits; the *_white and *peak constants are scRGB
+//   graphics-normalized  1.0 = graphics white = UI brightness
+// The output is graphics-normalized. What the engine draws into the chain after
+// this pass (highlight outlines, LDR / PostPP billboards) is SDR content authored
+// for 1.0 = SDR white, like the UI, so it lands at UI brightness with no per-pass
+// scaling. OutputEncode.hlsl converts to scRGB once, where the chain is copied
+// into the render target.
 cbuffer HdrConstants : register(b0)
 {
     float paper_white;
+    float graphics_white;
     float peak;
-    float source_peak;
-    float bloom_mult;
+    float source_peak;          // >= peak, see TonemapPatch
 
+    float sdr_gain;             // see TonemapPatch.SdrGainAt
+    float bloom_mult;
     float bloom_dirt_ratio;
+    float black_lift;
+
     float grain_strength;
     float grain_amount;
     int   grain_size;
+    float frame_time;
 
     float contrast;
     float brightness;
     float saturation;
-    float brightness_r;
+    float vibrance;
 
+    float brightness_r;
     float brightness_g;
     float brightness_b;
-    float vibrance;
     float sepia_strength;
 
     float3 light_color;
-    float frame_time;
+    int    disable_tonemapping;
 
     float3 dark_color;
-    float black_lift;
-
-    int disable_postprocess;
-    int needs_alpha_luminance;
-    int pad0;
-    int pad1;
+    int    needs_alpha_luminance;
 };
 
 // ---------------------------------------------------------------------------
@@ -89,6 +98,12 @@ float get_relative_luminance(float3 rgb)
 float to_grayscale(float3 color)
 {
     return dot(float3(0.3, 0.59, 0.11), color);
+}
+
+// Engine Math/Color.hlsli
+float3 rgb_to_srgb(float3 rgb)
+{
+    return (rgb <= 0.0031308) ? rgb * 12.92 : (pow(abs(rgb), 1 / 2.4) * 1.055 - 0.055);
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +160,8 @@ float3 apply_grain(float3 source, uint2 texel)
 }
 
 // ---------------------------------------------------------------------------
-// Color filters (ported from engine Filters.hlsli, in paper-white-normalized space)
+// Color filters (ported from engine Filters.hlsli), on scene-normalized color:
+// the SDR range they were designed for.
 // ---------------------------------------------------------------------------
 float3 apply_basic_filters(float3 color)
 {
@@ -183,7 +199,11 @@ float3 apply_vibrance(float3 rgb)
     float lum = get_relative_luminance(rgb);
     float minc = min(min(rgb.r, rgb.g), rgb.b);
     float maxc = max(max(rgb.r, rgb.g), rgb.b);
-    float sat = maxc - minc;
+    // The engine runs this on SDR output, where max - min stays below ~1.3. Above
+    // paper white the raw difference grows with brightness: the stock vibrance (0.2)
+    // would desaturate HDR highlights and larger values invert them. Measured on the
+    // SDR range, the engine's result is kept there and highlights are left alone.
+    float sat = saturate(maxc - minc);
     float s = 1.0 + (vibrance * (1.0 - (sign(vibrance) * sat)));
     return lerp(lum, rgb, s);
 }
@@ -196,33 +216,45 @@ float3 apply_sepia(float3 color)
 }
 
 // ---------------------------------------------------------------------------
-// Hue-preserving channel soft clip: when any channel exceeds peak*0.8, scale
-// the whole rgb triplet so max_c rolls off toward peak. Keeps R/G/B ratios
-// (hue) intact and only compresses brightness. Prevents a single overbright
-// channel from being hard-clipped by the display while everything else stays
-// linear.
-//
-// Earlier versions also lerped the result toward grayscale ("path to white"),
-// modeling the SDR-era assumption that very bright pixels read as white. With
-// the scene now anchored to paper_white nits, mid-bright emissive (LBuffer
-// 5-15, ~1000-3000 nits) routinely crosses peak*0.8, and the desat lerp made
-// saturated emissive colors (battery LEDs, neon panels, engine plumes) look
-// washed-out. HDR displays exist precisely so saturated highlights can stay
-// saturated, so the desat step is gone.
+// BT.2390 EETF, scRGB in and out. KS is derived from the display / source peak
+// ratio; below it the curve is identity, above it a Hermite shoulder (C1 at KS,
+// flat at the end) lands exactly on peak at source_peak. The black level lift
+// comes after the shoulder, as E3 in BT.2390.
 // ---------------------------------------------------------------------------
-float3 apply_channel_soft_clip(float3 color)
+float eetf(float l)
 {
-    float max_c = max(max(color.r, color.g), color.b);
-    float start = peak * 0.8;
+    float source_pq = max(linear_to_pq(source_peak), 1e-6);
+    float max_lum   = saturate(linear_to_pq(peak) / source_pq);
+    float ks        = saturate(1.5 * max_lum - 0.5);
 
-    if (max_c <= start)
-        return color;
+    float e = saturate(linear_to_pq(l) / source_pq);
+    if (e > ks)
+    {
+        float t  = (e - ks) / max(1.0 - ks, 1e-6);
+        float t2 = t * t;
+        float t3 = t2 * t;
+        e =  (2.0 * t3 - 3.0 * t2 + 1.0) * ks
+          +  (t3 - 2.0 * t2 + t) * (1.0 - ks)
+          +  (-2.0 * t3 + 3.0 * t2) * max_lum;
+    }
 
-    float x = max_c - start;
-    float d = peak - start;
+    float one_minus_e    = 1.0 - e;
+    float one_minus_e_sq = one_minus_e * one_minus_e;
+    e += black_lift * one_minus_e_sq * one_minus_e_sq;
 
-    float compressed = peak - d * d / (x + d);
-    return color * (compressed / max_c);
+    return pq_to_linear(e * source_pq);
+}
+
+// ---------------------------------------------------------------------------
+// Display mapping: one EETF, on max(R,G,B). Scaling all channels by the ratio
+// of mapped to unmapped max keeps hue and saturation, and no channel can
+// exceed peak, so no second clip compresses near-neutral highlights short of
+// peak. Input and output are scene-normalized.
+// ---------------------------------------------------------------------------
+float3 map_to_display(float3 n)
+{
+    float m = max(max(n.r, n.g), n.b) * paper_white;
+    return n * (eetf(m) / max(m, 1e-6));
 }
 
 // ---------------------------------------------------------------------------
@@ -237,89 +269,35 @@ void cs_main(uint3 dtid : SV_DispatchThreadID)
     destination.GetDimensions(w, h);
     float2 uv = (texel + 0.5) / float2(w, h);
 
-    float3 source = source_tex[texel].xyz;
+    // 1. Film grain on the raw LBuffer, before exposure (engine order).
+    float3 source = apply_grain(source_tex[texel].xyz, texel);
 
-    // 1. Film grain (before tonemap, matches engine order)
-    source = apply_grain(source, texel);
-
-    // 2. Exposure: SE eye-adaptation only.
-    // (SE WhitePoint is a Hable-filmic parameter, irrelevant to our EETF.)
-    float exposure = exp2(avg_luminance[uint2(0, 0)].g);
-    float3 color = exposure * source;
-
-    // 3. Bloom - matches SE behavior: PP off skips bloom but keeps grain and color filters
-    if (!disable_postprocess)
+    // 2. Scene-normalized color. The engine exposes the average scene to ~1, adds
+    //    bloom and maps through Hable, whose slope at black is sdr_gain of SDR
+    //    white; scaling by it keeps the engine's shadows and midtones and anchors
+    //    them to paper white. The engine's DISABLE_TONEMAPPING variant (debug
+    //    overrides only) shows the raw LBuffer instead: no exposure, bloom or
+    //    curve, clipped at white.
+    float3 n = source;
+    if (!disable_tonemapping)
     {
         float dirt = dirt_tex.SampleLevel(bilinear_sampler, uv, 0) * bloom_dirt_ratio + (1 - bloom_dirt_ratio);
-        color += bloom_tex.SampleLevel(bilinear_sampler, uv, 0).xyz * bloom_mult * dirt;
+        float3 bloom = bloom_tex.SampleLevel(bilinear_sampler, uv, 0).xyz * bloom_mult * dirt;
+        n = sdr_gain * (exp2(avg_luminance[uint2(0, 0)].g) * source + bloom);
     }
 
-    // Note: SE's LBuffer is SDR-tonemap-ready (1.0 = SDR display white), not
-    // a paper-white-anchored absolute-nits buffer like modern HDR engines.
-    // Inverse-tone-mapping the LBuffer by multiplying paper_white here would
-    // over-brighten mid-bright illumination (firelight on surrounding
-    // surfaces, ambient glow) by ~2.5x while leaving the actual emissive
-    // cores unchanged (EETF clips them to display peak either way). The
-    // result destroys SE's intended SDR contrast hierarchy ("cozy campfire"
-    // turns into "scene-wide overexposure"). We treat LBuffer values as
-    // direct scRGB instead - LBuffer 1.0 = scRGB 1.0 = 80 nits SDR
-    // reference white. paper_white still anchors the UI composite path.
+    // 3. Color filters, before the display mapping: whatever they produce still
+    //    goes through it, so nothing overshoots peak.
+    n = max(apply_sepia(apply_vibrance(apply_basic_filters(n))), 0);
 
-    // 4. BT.2390 EETF in PQ space - standard display mapping.
-    // Forward parameterization: source_peak (config) is the expected scene
-    // max luminance; KS auto-derived via BT.2390 standard formula:
-    //   max_lum_norm = display_peak_pq / source_peak_pq
-    //   KS = 1.5 * max_lum_norm - 0.5
-    // When source <= display the curve collapses to linear hard-cap.
-    float lum = max(get_relative_luminance(color), 1e-6);
+    // 4. Display mapping
+    n = disable_tonemapping ? saturate(n) : map_to_display(n);
 
-    float display_peak_pq = linear_to_pq(peak);
-    float source_peak_pq  = max(linear_to_pq(source_peak), 1e-6);
-    float max_lum_norm    = saturate(display_peak_pq / source_peak_pq);
-    float ks              = clamp(1.5 * max_lum_norm - 0.5, 0.0, 1.0);
+    // 5. Alpha - FXAA reads perceptual luma from .w when needs_alpha_luminance is
+    //    set: the engine's is the luma of its sRGB-encoded SDR image, which this
+    //    matches exactly up to paper white. Otherwise downstream alpha-blend
+    //    (highlight, billboards) expects 1.0.
+    float alpha = needs_alpha_luminance ? get_relative_luminance(rgb_to_srgb(saturate(n))) : 1.0;
 
-    float lum_pq = linear_to_pq(lum);
-    float e      = saturate(lum_pq / source_peak_pq);
-
-    // Black lift in PQ space (BT.2390 Annex 3, perceptually uniform now).
-    float one_minus_e    = 1.0 - e;
-    float one_minus_e_sq = one_minus_e * one_minus_e;
-    e = e + black_lift * one_minus_e_sq * one_minus_e_sq;
-
-    // Cubic Hermite shoulder in PQ space (C1 continuous at KS, tangent 0 at peak).
-    float e_out;
-    if (e < ks)
-    {
-        e_out = e;
-    }
-    else
-    {
-        float t  = (e - ks) / max(1.0 - ks, 1e-6);
-        float t2 = t * t;
-        float t3 = t2 * t;
-        e_out =  (2.0 * t3 - 3.0 * t2 + 1.0) * ks
-              +  (t3 - 2.0 * t2 + t) * (1.0 - ks)
-              +  (-2.0 * t3 + 3.0 * t2) * max_lum_norm;
-    }
-
-    float mapped_lum_pq = e_out * source_peak_pq;
-    float mapped_lum    = pq_to_linear(mapped_lum_pq);
-    float3 hdr          = color * (mapped_lum / lum);
-
-    // 5. Color filters (in paper-white-normalized space)
-    float3 normalized = hdr / paper_white;
-    normalized = apply_basic_filters(normalized);
-    normalized = apply_vibrance(normalized);
-    normalized = apply_sepia(normalized);
-    hdr = max(normalized * paper_white, 0);
-
-    // 6. Channel soft clip (hue-preserving, no desat)
-    hdr = apply_channel_soft_clip(hdr);
-
-    // 7. Alpha - FXAA reads .w as luma when needs_alpha_luminance is set;
-    // otherwise downstream alpha-blend (highlight, billboards) expects 1.0.
-    float out_lum = get_relative_luminance(hdr);
-    float alpha = needs_alpha_luminance ? (out_lum / (1.0 + out_lum)) : 1.0;
-
-    destination[texel] = float4(hdr, alpha);
+    destination[texel] = float4(n * (paper_white / graphics_white), alpha);
 }
