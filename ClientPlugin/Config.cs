@@ -106,7 +106,7 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = true;
 
-    [Checkbox(description: "Variable refresh rate in windowed mode. Needs G-Sync/FreeSync, otherwise tears. Requires restart.")]
+    [Checkbox(description: "Variable refresh rate in windowed mode. Needs G-Sync/FreeSync, otherwise tears.")]
     public bool AllowTearing
     {
         get;

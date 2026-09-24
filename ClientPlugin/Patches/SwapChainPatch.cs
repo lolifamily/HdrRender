@@ -13,8 +13,9 @@ namespace ClientPlugin.Patches;
 internal static class SwapChainReplacer
 {
     // Driver-reported AllowTearing support. Probed once at plugin Init;
-    // false on Win10 < 1709 (Factory5 unavailable) or drivers that opt out.
-    // Read by Present-flag patch to decide whether to force tearing path.
+    // false before Win10 1607 / KB3156421 (Factory5 unavailable) or on drivers
+    // that opt out. Decides the swapchain's AllowTearing flag and gates the
+    // Present-flag patch.
     public static bool AllowTearingSupported { get; private set; }
 
     // Device-level frame latency. Per-swapchain SetMaximumFrameLatency would
@@ -87,8 +88,11 @@ internal static class SwapChainReplacer
         using var factory2 = factory1.QueryInterface<Factory2>();
 
         var currentSettings = MyPlatformRender.m_settings;
+        // Whenever supported, not only when Config.AllowTearing is on: the flag only
+        // permits tearing, SwapChainPresentTearingPatch decides per frame, and DXGI
+        // can't add it later - so the option can be switched on at runtime too.
         var flags = SwapChainFlags.AllowModeSwitch;
-        if (Config.Current.AllowTearing && AllowTearingSupported)
+        if (AllowTearingSupported)
             flags |= SwapChainFlags.AllowTearing;
 
         var desc = new SwapChainDescription1
@@ -151,6 +155,24 @@ internal static class CreateSwapChainPatch
     private static bool Prefix() => !HdrResources.Initialized;
 }
 
+// SE resizes the swapchain on every resolution change (MyRender11.ResizeSwapchain)
+// with SwapChainFlags.AllowModeSwitch hard-coded - the flags of the swapchain SE
+// creates, not of ours. DXGI can't add or remove AllowTearing in ResizeBuffers, it
+// returns E_INVALIDARG and every resolution change crashed.
+// A resize never changes flags: pass the ones the swapchain already has.
+//
+// __instance filter: only our swapchain, other plugins' swapchains pass through.
+[HarmonyPatch(typeof(SwapChain), nameof(SwapChain.ResizeBuffers),
+    typeof(int), typeof(int), typeof(int), typeof(Format), typeof(SwapChainFlags))]
+internal static class SwapChainResizeBuffersPatch
+{
+    private static void Prefix(SwapChain __instance, ref SwapChainFlags swapChainFlags)
+    {
+        if (!ReferenceEquals(__instance, MyRender11.m_swapchain)) return;
+        swapChainFlags = __instance.Description.Flags;
+    }
+}
+
 // DXGI flip model requires ResizeBuffers after SetFullscreenState(true),
 // otherwise the next Present throws DXGI_ERROR_INVALID_CALL.
 // (https://learn.microsoft.com/windows/win32/direct3ddxgi/for-best-performance--use-dxgi-flip-model)
@@ -182,7 +204,12 @@ internal static class TryChangeToFullscreenPatch
 [HarmonyPatch(typeof(MyRender11), nameof(MyRender11.Present))]
 internal static class PresentForceExitFullscreenPatch
 {
-    private static bool _wasFullScreen;
+    // Exclusive fullscreen as DXGI sees it: true only after SetFullscreenState(true),
+    // i.e. SE's Fullscreen mode; borderless FullscreenWindow is a plain window and
+    // reads false. SwapChainPresentTearingPatch reads it inside the same
+    // MyRender11.Present. SE enters exclusive only after Present (TryChangeToFullscreen),
+    // so it can't be stale towards windowed - the direction that would matter.
+    public static bool IsExclusiveFullscreen { get; private set; }
 
     private static void Prefix()
     {
@@ -192,13 +219,13 @@ internal static class PresentForceExitFullscreenPatch
         sw.GetFullscreenState(out var isFs, out var fsOut);
         fsOut?.Dispose();
 
-        if (_wasFullScreen && !isFs)
+        if (IsExclusiveFullscreen && !isFs)
         {
             SwapChainReplacer.RebuildBackbuffer();
             VRage.Utils.MyLog.Default.WriteLine("HDR: ResizeBuffers after DXGI-forced exit fullscreen");
         }
 
-        _wasFullScreen = isFs;
+        IsExclusiveFullscreen = isFs;
     }
 }
 
@@ -211,12 +238,18 @@ internal static class PresentForceExitFullscreenPatch
 // __instance filter: SwapChain.Present is shared by every swapchain in the
 // process. Only override for the one we own; other plugins' swapchains pass
 // through untouched.
+//
+// Not in exclusive fullscreen: PresentFlags.AllowTearing there (SE's Fullscreen
+// mode, entered via SetFullscreenState(true)) also returns DXGI_ERROR_INVALID_CALL.
+// There SE's own flags and sync interval go through; exclusive fullscreen tears and
+// runs VRR without the flag anyway. Borderless FullscreenWindow keeps the flag.
 [HarmonyPatch(typeof(SwapChain), nameof(SwapChain.Present), typeof(int), typeof(PresentFlags))]
 internal static class SwapChainPresentTearingPatch
 {
     private static void Prefix(SwapChain __instance, ref int syncInterval, ref PresentFlags flags)
     {
         if (!Config.Current.AllowTearing || !SwapChainReplacer.AllowTearingSupported) return;
+        if (PresentForceExitFullscreenPatch.IsExclusiveFullscreen) return;
         if (!ReferenceEquals(__instance, MyRender11.m_swapchain)) return;
         syncInterval = 0;
         flags |= PresentFlags.AllowTearing;
