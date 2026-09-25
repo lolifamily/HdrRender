@@ -51,6 +51,11 @@ internal static class TonemapPatch
         public float DarkColorG;
         public float DarkColorB;
         public int NeedsAlphaLuminance;
+
+        public float WhitePoint;
+        public float NaturalColor;
+        public float Padding0;
+        public float Padding1;
     }
 
     // Slope at black of the engine's Hable curve (Filters.hlsli) over its value at the
@@ -120,7 +125,10 @@ internal static class TonemapPatch
             DarkColorR = pp.Data.DarkColor.X,
             DarkColorG = pp.Data.DarkColor.Y,
             DarkColorB = pp.Data.DarkColor.Z,
-            NeedsAlphaLuminance = needsAlphaLuminance ? 1 : 0
+            NeedsAlphaLuminance = needsAlphaLuminance ? 1 : 0,
+
+            WhitePoint = pp.Data.WhitePoint,
+            NaturalColor = cfg.NaturalColor
         };
 
         var mapped = ctx.MapSubresource(HdrResources.HdrConstantBuffer.Resource, 0, MapMode.WriteDiscard, MapFlags.None);

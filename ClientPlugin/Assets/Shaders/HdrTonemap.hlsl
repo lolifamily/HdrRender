@@ -48,6 +48,10 @@ cbuffer HdrConstants : register(b0)
 
     float3 dark_color;
     int    needs_alpha_luminance;
+
+    float  white_point;         // the engine's Hable white point
+    float  natural_color;       // see map_to_display
+    float2 padding;
 };
 
 // ---------------------------------------------------------------------------
@@ -99,6 +103,13 @@ float to_grayscale(float3 color)
 {
     return dot(float3(0.3, 0.59, 0.11), color);
 }
+
+float max3(float3 c)
+{
+    return max(max(c.r, c.g), c.b);
+}
+
+static const float flt_max = 3.402823466e+38;
 
 // Engine Math/Color.hlsli
 float3 rgb_to_srgb(float3 rgb)
@@ -194,16 +205,17 @@ float3 apply_basic_filters(float3 color)
     return mul(float4(color, 1), m).rgb;
 }
 
-float3 apply_vibrance(float3 rgb)
+float3 apply_vibrance(float3 rgb, float sat_limit)
 {
     float lum = get_relative_luminance(rgb);
     float minc = min(min(rgb.r, rgb.g), rgb.b);
     float maxc = max(max(rgb.r, rgb.g), rgb.b);
     // The engine runs this on SDR output, where max - min stays below ~1.3. Above
     // paper white the raw difference grows with brightness: the stock vibrance (0.2)
-    // would desaturate HDR highlights and larger values invert them. Measured on the
-    // SDR range, the engine's result is kept there and highlights are left alone.
-    float sat = saturate(maxc - minc);
+    // would desaturate HDR highlights and larger values invert them. HDR values
+    // measure it on the SDR range (sat_limit 1), which keeps the engine's result
+    // there and leaves highlights alone; the engine's own color measures it unclamped.
+    float sat = min(maxc - minc, sat_limit);
     float s = 1.0 + (vibrance * (1.0 - (sign(vibrance) * sat)));
     return lerp(lum, rgb, s);
 }
@@ -213,6 +225,30 @@ float3 apply_sepia(float3 color)
     float gray = saturate(to_grayscale(color));
     float3 sepia = lerp(dark_color, light_color, gray);
     return lerp(color, sepia, sepia_strength);
+}
+
+// The engine's filter chain, in its order (Postprocess/Tonemapping/Main.hlsl).
+float3 apply_filters(float3 color, float sat_limit)
+{
+    return apply_sepia(apply_vibrance(apply_basic_filters(color), sat_limit));
+}
+
+// ---------------------------------------------------------------------------
+// The vanilla SDR color of the pixel, as the engine's tonemap computes it
+// (Postprocess/Tonemapping/Main.hlsl): its filmic curve per channel over the
+// curve's value at the white point, the filters, saturate. Its channels fade to
+// white as they approach the white point, the look the content was authored for.
+// ---------------------------------------------------------------------------
+float3 hable(float3 x)
+{
+    const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30;
+    return (x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F) - E / F;
+}
+
+float3 vanilla_color(float3 color)
+{
+    float3 curve = hable(color) / hable(max(white_point, 1e-3).xxx);
+    return saturate(apply_filters(curve, flt_max));
 }
 
 // ---------------------------------------------------------------------------
@@ -246,15 +282,19 @@ float eetf(float l)
 }
 
 // ---------------------------------------------------------------------------
-// Display mapping: one EETF, on max(R,G,B). Scaling all channels by the ratio
-// of mapped to unmapped max keeps hue and saturation, and no channel can
-// exceed peak, so no second clip compresses near-neutral highlights short of
-// peak. Input and output are scene-normalized.
+// Display mapping: one EETF, on max(R,G,B), so no channel can exceed peak and
+// no second clip compresses near-neutral highlights short of it. The color
+// direction, max(R,G,B) = 1, blends by natural_color from the vanilla color's
+// (0: the authored look, bright colors fade to white) to the HDR color's own
+// (1: hue and saturation kept at any brightness, as the eye sees it). n is
+// scene-normalized, in and out; vanilla is vanilla_color() of the same pixel.
 // ---------------------------------------------------------------------------
-float3 map_to_display(float3 n)
+float3 map_to_display(float3 n, float3 vanilla)
 {
-    float m = max(max(n.r, n.g), n.b) * paper_white;
-    return n * (eetf(m) / max(m, 1e-6));
+    float m = max3(n);
+    float3 vanilla_dir = vanilla / max(max3(vanilla), 1e-6);
+    float3 hdr_dir = n / max(m, 1e-6);
+    return eetf(m * paper_white) / paper_white * lerp(vanilla_dir, hdr_dir, natural_color);
 }
 
 // ---------------------------------------------------------------------------
@@ -272,26 +312,32 @@ void cs_main(uint3 dtid : SV_DispatchThreadID)
     // 1. Film grain on the raw LBuffer, before exposure (engine order).
     float3 source = apply_grain(source_tex[texel].xyz, texel);
 
-    // 2. Scene-normalized color. The engine exposes the average scene to ~1, adds
-    //    bloom and maps through Hable, whose slope at black is sdr_gain of SDR
-    //    white; scaling by it keeps the engine's shadows and midtones and anchors
-    //    them to paper white. The engine's DISABLE_TONEMAPPING variant (debug
-    //    overrides only) shows the raw LBuffer instead: no exposure, bloom or
-    //    curve, clipped at white.
-    float3 n = source;
-    if (!disable_tonemapping)
+    float3 n;
+    if (disable_tonemapping)
     {
+        // The engine's DISABLE_TONEMAPPING variant (debug overrides only): the raw
+        // LBuffer, no exposure, bloom or curve, through the filters, clipped at white.
+        n = saturate(apply_filters(source, flt_max));
+    }
+    else
+    {
+        // 2. Scene-normalized color. The engine exposes the average scene to ~1,
+        //    adds bloom and maps through Hable, whose slope at black is sdr_gain of
+        //    SDR white; scaling by it keeps the engine's shadows and midtones and
+        //    anchors them to paper white.
         float dirt = dirt_tex.SampleLevel(bilinear_sampler, uv, 0) * bloom_dirt_ratio + (1 - bloom_dirt_ratio);
         float3 bloom = bloom_tex.SampleLevel(bilinear_sampler, uv, 0).xyz * bloom_mult * dirt;
-        n = sdr_gain * (exp2(avg_luminance[uint2(0, 0)].g) * source + bloom);
+        float3 color = exp2(avg_luminance[uint2(0, 0)].g) * source + bloom;
+
+        // 3. Color filters, before the display mapping: whatever they produce still
+        //    goes through it, so nothing overshoots peak.
+        n = max(apply_filters(sdr_gain * color, 1.0), 0);
+
+        // 4. Display mapping. A NaN or +Inf in the scene (both LBuffer formats keep
+        //    them) turns the mapping into NaN; the engine's saturate() makes such a
+        //    pixel black, max() does the same here (it returns the non-NaN operand).
+        n = max(map_to_display(n, vanilla_color(color)), 0);
     }
-
-    // 3. Color filters, before the display mapping: whatever they produce still
-    //    goes through it, so nothing overshoots peak.
-    n = max(apply_sepia(apply_vibrance(apply_basic_filters(n))), 0);
-
-    // 4. Display mapping
-    n = disable_tonemapping ? saturate(n) : map_to_display(n);
 
     // 5. Alpha - FXAA reads perceptual luma from .w when needs_alpha_luminance is
     //    set: the engine's is the luma of its sRGB-encoded SDR image, which this
