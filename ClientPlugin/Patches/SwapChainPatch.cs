@@ -129,7 +129,7 @@ internal static class SwapChainReplacer
         // RestoreFullscreenMode would normally fix it on the next SetFocus event.
         // But the window is already focused at startup, so that event never fires.
         // Manually trigger it so the next ApplySettings(null)/TryChangeToFullscreen
-        // restores exclusive fullscreen (and our ResizeBuffers postfix fires).
+        // restores exclusive fullscreen (and FullscreenTransitionPatch resizes the buffers).
         if (MyPlatformRender.m_settings.WindowMode == MyWindowModeEnum.Fullscreen)
             MyPlatformRender.RestoreFullscreenMode();
     }
@@ -173,36 +173,21 @@ internal static class SwapChainResizeBuffersPatch
     }
 }
 
-// DXGI flip model requires ResizeBuffers after SetFullscreenState(true),
-// otherwise the next Present throws DXGI_ERROR_INVALID_CALL.
+// DXGI flip model: after every fullscreen <-> windowed transition the next Present
+// throws DXGI_ERROR_INVALID_CALL unless ResizeBuffers ran in between.
 // (https://learn.microsoft.com/windows/win32/direct3ddxgi/for-best-performance--use-dxgi-flip-model)
 // Stock SE uses a bitblt swapchain which is exempt; ReplaceSwapChain switched
 // us to flip model, so this step must be added back.
-[HarmonyPatch(typeof(MyPlatformRender), nameof(MyPlatformRender.TryChangeToFullscreen))]
-internal static class TryChangeToFullscreenPatch
-{
-    private static void Postfix()
-    {
-        var sw = MyRender11.m_swapchain;
-        if (sw == null) return;
-
-        sw.GetFullscreenState(out var isFs, out var output);
-        output?.Dispose();
-        if (!isFs) return;
-
-        SwapChainReplacer.RebuildBackbuffer();
-        VRage.Utils.MyLog.Default.WriteLine("HDR: ResizeBuffers after SetFullscreenState(true)");
-    }
-}
-
-// DXGI forcibly drops exclusive fullscreen on focus loss (alt-tab, Win key).
-// This forced transition cannot be disabled even with DXGI_MWA_NO_ALT_ENTER.
-// flip-model swapchains require ResizeBuffers after any fullscreen<->windowed
-// transition, otherwise the very next Present throws DXGI_ERROR_INVALID_CALL.
-// SE has no knowledge that DXGI dropped fullscreen, so we detect it ourselves
-// and repair the swapchain right before SE issues Present.
+//
+// Transitions come from SE entering exclusive fullscreen (TryChangeToFullscreen,
+// after Present), SE leaving it (MyPlatformRender.ApplySettings), and DXGI dropping
+// it on focus loss (alt-tab, Win key), which SE never learns about. Rather than hook
+// each, compare DXGI's state with the previous Present's right before SE's Present.
+// Only a change resizes: SE calls TryChangeToFullscreen every frame, and resizing on
+// every fullscreen frame reallocated both buffers each frame. The frame drawn since
+// the transition is lost; it falls inside the mode switch.
 [HarmonyPatch(typeof(MyRender11), nameof(MyRender11.Present))]
-internal static class PresentForceExitFullscreenPatch
+internal static class FullscreenTransitionPatch
 {
     // Exclusive fullscreen as DXGI sees it: true only after SetFullscreenState(true),
     // i.e. SE's Fullscreen mode; borderless FullscreenWindow is a plain window and
@@ -216,16 +201,15 @@ internal static class PresentForceExitFullscreenPatch
         var sw = MyRender11.m_swapchain;
         if (sw == null) return;
 
-        sw.GetFullscreenState(out var isFs, out var fsOut);
-        fsOut?.Dispose();
-
-        if (IsExclusiveFullscreen && !isFs)
-        {
-            SwapChainReplacer.RebuildBackbuffer();
-            VRage.Utils.MyLog.Default.WriteLine("HDR: ResizeBuffers after DXGI-forced exit fullscreen");
-        }
+        sw.GetFullscreenState(out var isFs, out var output);
+        output?.Dispose();
+        if (isFs == IsExclusiveFullscreen) return;
 
         IsExclusiveFullscreen = isFs;
+        SwapChainReplacer.RebuildBackbuffer();
+        VRage.Utils.MyLog.Default.WriteLine(isFs
+            ? "HDR: ResizeBuffers after entering exclusive fullscreen"
+            : "HDR: ResizeBuffers after leaving exclusive fullscreen");
     }
 }
 
@@ -249,7 +233,7 @@ internal static class SwapChainPresentTearingPatch
     private static void Prefix(SwapChain __instance, ref int syncInterval, ref PresentFlags flags)
     {
         if (!Config.Current.AllowTearing || !SwapChainReplacer.AllowTearingSupported) return;
-        if (PresentForceExitFullscreenPatch.IsExclusiveFullscreen) return;
+        if (FullscreenTransitionPatch.IsExclusiveFullscreen) return;
         if (!ReferenceEquals(__instance, MyRender11.m_swapchain)) return;
         syncInterval = 0;
         flags |= PresentFlags.AllowTearing;
