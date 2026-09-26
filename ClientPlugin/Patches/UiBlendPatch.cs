@@ -77,6 +77,6 @@ internal static class UiBlendPatch
         rc.SetBlendState(HdrResources.UiBlendState, new RawColor4(graphicsWhite, graphicsWhite, graphicsWhite, 1f));
     }
 
-    private static bool IsScRgb(IRtvBindable rtv) =>
+    internal static bool IsScRgb(IRtvBindable rtv) =>
         rtv?.Rtv is { } view && view.Description.Format == HdrResources.BackbufferFormat;
 }

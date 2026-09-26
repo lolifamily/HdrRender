@@ -174,9 +174,9 @@ internal static class ScreenshotPatch
                 }
 
                 var i = lineOff + x * 4;
-                sdr[i]     = (byte)PackUtils.PackUNorm(255f, LinearToSrgb(Math.Min(r, 1f)));
-                sdr[i + 1] = (byte)PackUtils.PackUNorm(255f, LinearToSrgb(Math.Min(g, 1f)));
-                sdr[i + 2] = (byte)PackUtils.PackUNorm(255f, LinearToSrgb(Math.Min(b, 1f)));
+                sdr[i]     = (byte)PackUtils.PackUNorm(255f, Encode(Math.Min(r, 1f)));
+                sdr[i + 1] = (byte)PackUtils.PackUNorm(255f, Encode(Math.Min(g, 1f)));
+                sdr[i + 2] = (byte)PackUtils.PackUNorm(255f, Encode(Math.Min(b, 1f)));
                 sdr[i + 3] = 255;
             }
         });
@@ -188,6 +188,7 @@ internal static class ScreenshotPatch
         }
     }
 
-    private static float LinearToSrgb(float c) =>
-        c <= 0.0031308f ? c * 12.92f : 1.055f * (float)Math.Pow(c, 1.0 / 2.4) - 0.055f;
+    // The frame holds what a gamma 2.2 monitor shows (HdrTonemap.hlsl sdr_on_gamma22, UiGammaPatch), so 1 / 2.2 gives
+    // back the bytes the engine would have written, below the knee exactly, for a monitor to decode the same way.
+    private static float Encode(float c) => (float)Math.Pow(c, 1.0 / 2.2);
 }

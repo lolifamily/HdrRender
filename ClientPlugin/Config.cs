@@ -79,6 +79,14 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = 6f;
 
+    [Slider(0f, 0.8f, 0.05f, description: "Midtones up to this share of paper white look as in SDR. 0 = off.")]
+    public float VanillaMidtones
+    {
+        get;
+        [UsedImplicitly]
+        set => SetField(ref field, value);
+    } = 0.7f;
+
     [Slider(0f, 1f, 0.05f, description: "0 = vanilla: bright colors fade to white. 1 = they keep their color.")]
     public float NaturalColor
     {

@@ -52,6 +52,11 @@ cbuffer HdrConstants : register(b0)
     float  white_point;         // the engine's Hable white point
     float  natural_color;       // see map_to_display
     float2 padding;
+
+    float  midtones_end;        // see midtones_gain
+    float  midtones_level;
+    float  midtones_slope;
+    float  padding2;
 };
 
 // ---------------------------------------------------------------------------
@@ -115,6 +120,19 @@ static const float flt_max = 3.402823466e+38;
 float3 rgb_to_srgb(float3 rgb)
 {
     return (rgb <= 0.0031308) ? rgb * 12.92 : (pow(abs(rgb), 1 / 2.4) * 1.055 - 0.055);
+}
+
+// ---------------------------------------------------------------------------
+// SDR as a gamma 2.2 monitor shows it: the engine encodes its SDR output with
+// the piecewise sRGB curve above, most monitors decode that with a plain 2.2,
+// whose toe darkens the deepest tones. The HDR output takes that decode for the
+// SDR range; above SDR white (1.0) there is no SDR look to keep. UiSprites.hlsl
+// decodes the UI the same way, and the SDR screenshot encodes with 1 / 2.2 to
+// undo it (ScreenshotPatch).
+// ---------------------------------------------------------------------------
+float3 sdr_on_gamma22(float3 x)
+{
+    return (x <= 1.0) ? pow(max(rgb_to_srgb(x), 0.0), 2.2) : x;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +270,25 @@ float3 vanilla_color(float3 color)
 }
 
 // ---------------------------------------------------------------------------
+// Vanilla midtones, as a gain on the color: T(c) / c on c = max(R,G,B). Below
+// midtones_end (in m = sdr_gain * c) T is the engine's curve itself, the SDR
+// midtones as the content was graded; above it the curve's tangent, C1, on into
+// the EETF (TonemapPatch.MidtonesAt). It runs where the engine's curve does, in
+// front of the filters: their saturation and vibrance mix channels, so behind them
+// max(R,G,B) no longer meets the curve at the hand-over and colors would step
+// there. Off, the tangent (0, 0, 1) makes the gain sdr_gain, exactly. Film grain
+// can push the LBuffer below 0; such pixels keep the curve's slope at black.
+// ---------------------------------------------------------------------------
+float midtones_gain(float c)
+{
+    if (c <= 0)
+        return sdr_gain;
+    if (sdr_gain * c < midtones_end)
+        return hable(c.xxx).x / hable(max(white_point, 1e-3).xxx).x / c;
+    return midtones_slope * sdr_gain + (midtones_level - midtones_slope * midtones_end) / c;
+}
+
+// ---------------------------------------------------------------------------
 // BT.2390 EETF, scRGB in and out. KS is derived from the display / source peak
 // ratio; below it the curve is identity, above it a Hermite shoulder (C1 at KS,
 // flat at the end) lands exactly on peak at source_peak. The black level lift
@@ -329,9 +366,10 @@ void cs_main(uint3 dtid : SV_DispatchThreadID)
         float3 bloom = bloom_tex.SampleLevel(bilinear_sampler, uv, 0).xyz * bloom_mult * dirt;
         float3 color = exp2(avg_luminance[uint2(0, 0)].g) * source + bloom;
 
-        // 3. Color filters, before the display mapping: whatever they produce still
-        //    goes through it, so nothing overshoots peak.
-        n = max(apply_filters(sdr_gain * color, 1.0), 0);
+        // 3. The vanilla midtones, then the color filters, in the engine's order. The
+        //    filters come before the display mapping: whatever they produce still goes
+        //    through it, so nothing overshoots peak.
+        n = max(apply_filters(color * midtones_gain(max3(color)), 1.0), 0);
 
         // 4. Display mapping. A NaN or +Inf in the scene (both LBuffer formats keep
         //    them) turns the mapping into NaN; the engine's saturate() makes such a
@@ -345,5 +383,7 @@ void cs_main(uint3 dtid : SV_DispatchThreadID)
     //    (highlight, billboards) expects 1.0.
     float alpha = needs_alpha_luminance ? get_relative_luminance(rgb_to_srgb(saturate(n))) : 1.0;
 
-    destination[texel] = float4(n * (paper_white / graphics_white), alpha);
+    // 6. HDR out, its SDR range as a gamma 2.2 monitor shows it. The alpha above
+    //    stays the engine's, from its own encoding.
+    destination[texel] = float4(sdr_on_gamma22(n) * (paper_white / graphics_white), alpha);
 }

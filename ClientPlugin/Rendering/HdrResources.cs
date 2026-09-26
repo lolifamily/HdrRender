@@ -21,6 +21,11 @@ internal static class HdrResources
     public static ComputeShader ChromaticAberrationComputeShader { get; private set; }
     public static PixelShader OutputCopyPixelShader { get; private set; }
     public static PixelShader OutputFilterPixelShader { get; private set; }
+
+    // The engine's two sprite pixel shaders with the gamma 2.2 decode, see UiGammaPatch.
+    public static PixelShader UiSpritesPixelShader { get; private set; }
+    public static PixelShader UiSpritesPmPixelShader { get; private set; }
+
     public static IConstantBuffer HdrConstantBuffer { get; private set; }
     public static IConstantBuffer ChromaticConstantBuffer { get; private set; }
     public static IConstantBuffer OutputConstantBuffer { get; private set; }
@@ -49,6 +54,8 @@ internal static class HdrResources
         ChromaticAberrationComputeShader = CompileCompute(device, "ChromaticAberration.hlsl", "cs_main");
         OutputCopyPixelShader = CompilePixel(device, "OutputEncode.hlsl", "ps_copy");
         OutputFilterPixelShader = CompilePixel(device, "OutputEncode.hlsl", "ps_filter");
+        UiSpritesPixelShader = CompilePixel(device, "UiSprites.hlsl", "ps_sprites");
+        UiSpritesPmPixelShader = CompilePixel(device, "UiSprites.hlsl", "ps_sprites_pm");
 
         HdrConstantBuffer = MyManagers.Buffers.CreateConstantBuffer(
             "HdrOutput.HdrConstants",
@@ -92,6 +99,10 @@ internal static class HdrResources
         OutputCopyPixelShader = null;
         OutputFilterPixelShader?.Dispose();
         OutputFilterPixelShader = null;
+        UiSpritesPixelShader?.Dispose();
+        UiSpritesPixelShader = null;
+        UiSpritesPmPixelShader?.Dispose();
+        UiSpritesPmPixelShader = null;
 
         if (HdrConstantBuffer != null)
         {
