@@ -25,6 +25,10 @@ internal static class HdrResources
     public static IConstantBuffer ChromaticConstantBuffer { get; private set; }
     public static IConstantBuffer OutputConstantBuffer { get; private set; }
 
+    // The engine's BlendAlphaPremult with rgb scaled by the blend factor, see UiBlendPatch.
+    // Owned by the engine's blend state manager, which recreates it on a device reset.
+    public static IBlendState UiBlendState { get; private set; }
+
     private static string _shadersPath;
 
     public static void SetAssetsPath(string folder)
@@ -60,6 +64,17 @@ internal static class HdrResources
             "HdrOutput.OutputConstants",
             16,
             usage: ResourceUsage.Dynamic);
+
+        var uiBlend = default(BlendStateDescription);
+        uiBlend.RenderTarget[0].IsBlendEnabled = true;
+        uiBlend.RenderTarget[0].RenderTargetWriteMask = ColorWriteMaskFlags.All;
+        uiBlend.RenderTarget[0].BlendOperation = BlendOperation.Add;
+        uiBlend.RenderTarget[0].AlphaBlendOperation = BlendOperation.Add;
+        uiBlend.RenderTarget[0].SourceBlend = BlendOption.BlendFactor;
+        uiBlend.RenderTarget[0].DestinationBlend = BlendOption.InverseSourceAlpha;
+        uiBlend.RenderTarget[0].SourceAlphaBlend = BlendOption.One;
+        uiBlend.RenderTarget[0].DestinationAlphaBlend = BlendOption.InverseSourceAlpha;
+        UiBlendState = MyManagers.BlendStates.CreateResource("HdrOutput.UiBlend", ref uiBlend);
     }
 
     public static void SetInitialized(bool value)

@@ -60,7 +60,7 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = 200f;
 
-    // Serialized as <PaperWhite>: that setting only ever drove the UI composite, so
+    // Serialized as <PaperWhite>: that setting only ever drove the UI brightness, so
     // existing configs already hold the UI brightness there.
     [XmlElement("PaperWhite")]
     [Slider(40f, 500f, 10f, label: "UI brightness", description: "Menus, HUD and in-world overlays (block highlight, gizmos, crosshair) in nits. Independent of paper white.")]

@@ -1,15 +1,10 @@
-// Graphics-normalized (1.0 = UI brightness) -> scRGB (1.0 = 80 nits).
-// Both things that reach the render target go through here: the copy that ends
-// the post-process chain (ChainCopyPatch) and the UI composite
-// (ConsumeMainSpritesPatch). Drawn with MyScreenPass.DrawFullscreenQuad, so the
-// input is the engine's PostprocessCopy vertex output.
+// Graphics-normalized (1.0 = UI brightness) -> scRGB (1.0 = 80 nits), for the copy
+// that ends the post-process chain (ChainCopyPatch). The UI is drawn straight into
+// the render target and gets the same scale from the blend factor (UiBlendPatch).
+// Drawn with MyScreenPass.DrawFullscreenQuad, so the input is the engine's
+// PostprocessCopy vertex output.
 //
-// rgb is scaled, alpha passes through. The UI layer is premultiplied: Sprites.hlsl
-// multiplies the vertex color by alpha, and the texture sample too under
-// PREMULTIPLY_ALPHA, and MySpritesManager blends with BlendAlphaPremult. The
-// composite uses the same blend state, so rgb scales linearly and must not be
-// multiplied by alpha again - that would square the alpha and crush every
-// translucent UI element (tooltips, HUD fades, modal dimmers).
+// rgb is scaled, alpha passes through.
 
 Texture2D source : register(t0);
 SamplerState linear_sampler : register(s2);   // engine LinearSampler slot

@@ -155,6 +155,36 @@ internal static class CreateSwapChainPatch
     private static bool Prefix() => !HdrResources.Initialized;
 }
 
+// The swapchain is replaced at the start of the first frame, before anything draws into the
+// backbuffer: RenderMainSprites() is the first thing FullDraw and SimpleDraw do with it, it
+// starts recording the UI into it.
+[HarmonyPatch(typeof(MyRender11), nameof(MyRender11.RenderMainSprites), [])]
+internal static class RenderMainSpritesPatch
+{
+    private static void Prefix() => SwapChainReplacer.ReplaceSwapChain();
+
+    // Plugin self-disable on crash. Any exception that bubbles through patched
+    // RenderMainSprites (our Prefix, the original method, downstream Postfixes,
+    // or other plugins' patches on this method) sets DisabledAfterCrash and
+    // flushes to disk. The next launch reads the flag in Plugin.Init and skips
+    // patching entirely. User clears the flag in plugin config UI to retry.
+    //
+    // Save() can throw on IO failure - log and continue so the original render
+    // crash exception keeps its place in SE's minidump.
+    private static Exception Finalizer(Exception __exception)
+    {
+        if (__exception == null) return null;
+
+        Config.Current.DisabledAfterCrash = true;
+        try { Settings.ConfigStorage.Save(Config.Current); }
+        catch (Exception saveEx)
+        {
+            VRage.Utils.MyLog.Default.WriteLine($"HDR: Failed to persist DisabledAfterCrash flag: {saveEx.Message}");
+        }
+        return __exception;
+    }
+}
+
 // SE resizes the swapchain on every resolution change (MyRender11.ResizeSwapchain)
 // with SwapChainFlags.AllowModeSwitch hard-coded - the flags of the swapchain SE
 // creates, not of ours. DXGI can't add or remove AllowTearing in ResizeBuffers, it

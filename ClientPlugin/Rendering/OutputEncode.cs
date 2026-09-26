@@ -6,9 +6,9 @@ using VRageRender;
 
 namespace ClientPlugin.Rendering;
 
-// Graphics-normalized (1.0 = UI brightness) -> scRGB, see OutputEncode.hlsl. The one
-// place the UI brightness scale is applied: the post-process chain copy and the UI
-// composite both draw through here.
+// Graphics-normalized (1.0 = UI brightness) -> scRGB, see OutputEncode.hlsl, for the
+// copy that ends the post-process chain. The UI gets the same scale from the blend
+// factor as it is drawn, see UiBlendPatch.
 internal static class OutputEncode
 {
     // filter: resample instead of copying texel for texel, which MyCopyToRT.Run does
