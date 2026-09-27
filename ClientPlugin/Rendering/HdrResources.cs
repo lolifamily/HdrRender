@@ -41,6 +41,8 @@ internal static class HdrResources
         _shadersPath = Path.Combine(folder, "Shaders");
     }
 
+    public static string ShaderFile(string file) => Path.Combine(_shadersPath, file);
+
     public static void InitShaders()
     {
         if (TonemapComputeShader != null)
@@ -142,7 +144,7 @@ internal static class HdrResources
     // (same pattern as MyShaderCompiler.cs:241-243).
     private static CompilationResult Compile(string file, string entry, string profile)
     {
-        var src = File.ReadAllText(Path.Combine(_shadersPath, file));
+        var src = File.ReadAllText(ShaderFile(file));
         var bc = ShaderBytecode.Compile(src, entry, profile, ShaderFlags.OptimizationLevel3);
         if (bc.Bytecode != null) return bc;
         

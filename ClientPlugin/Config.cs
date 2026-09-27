@@ -87,6 +87,14 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = 0.7f;
 
+    [Slider(0f, 1f, 0.05f, description: "1 = vanilla: bright scenes are dimmed to the same level. 0 = they keep their brightness.")]
+    public float EyeAdaptation
+    {
+        get;
+        [UsedImplicitly]
+        set => SetField(ref field, value);
+    } = 0.5f;
+
     [Slider(0f, 1f, 0.05f, description: "0 = vanilla: bright colors fade to white. 1 = they keep their color.")]
     public float NaturalColor
     {

@@ -119,6 +119,8 @@ internal static class TonemapPatch
         bool needsAlphaLuminance,
         ref IBorrowedCustomTexture __result)
     {
+        PartialEyeAdaptation.Update();
+
         var dest = MyManagers.RwTexturesPool.BorrowCustom("DrawGameScene.Tonemapped");
         var rc = MyImmediateRC.RC;
         var ctx = MyRender11.DeviceInstance.ImmediateContext;
