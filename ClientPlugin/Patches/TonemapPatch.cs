@@ -54,13 +54,13 @@ internal static class TonemapPatch
 
         public float WhitePoint;
         public float NaturalColor;
-        public float Padding0;
-        public float Padding1;
+        public float GamutExpansion;      // see HdrTonemap.hlsl expand_gamut
+        public uint GamutBins;            // GamutWalls.Bins, see HdrTonemap.hlsl gamut_wall
 
         public float MidtonesEnd;         // see MidtonesAt
         public float MidtonesLevel;
         public float MidtonesSlope;
-        public float Padding2;
+        public float NaturalTones;        // see HdrTonemap.hlsl expand_gamut
     }
 
     // The engine's Hable curve (Filters.hlsli) and its slope.
@@ -121,7 +121,11 @@ internal static class TonemapPatch
     {
         PartialEyeAdaptation.Update();
 
-        var dest = MyManagers.RwTexturesPool.BorrowCustom("DrawGameScene.Tonemapped");
+        // Sized from src, not ResolutionI: HdrTonemap.hlsl reads source_tex[texel] at the
+        // destination's texels. The engine's LBuffer is ResolutionI-sized anyway; an upscaler
+        // that passes its output-resolution color gets an output-resolution chain. Named
+        // arguments: three positional ints bind to (debugName, samplesCount, samplesQuality).
+        var dest = MyManagers.RwTexturesPool.BorrowCustom("DrawGameScene.Tonemapped", width: src.Size.X, height: src.Size.Y);
         var rc = MyImmediateRC.RC;
         var ctx = MyRender11.DeviceInstance.ImmediateContext;
 
@@ -173,10 +177,13 @@ internal static class TonemapPatch
 
             WhitePoint = pp.Data.WhitePoint,
             NaturalColor = cfg.NaturalColor,
+            GamutExpansion = cfg.GamutExpansion,
+            GamutBins = GamutWalls.Bins,
 
             MidtonesEnd = midtones.End,
             MidtonesLevel = midtones.Level,
-            MidtonesSlope = midtones.Slope
+            MidtonesSlope = midtones.Slope,
+            NaturalTones = cfg.NaturalTones
         };
 
         var mapped = ctx.MapSubresource(HdrResources.HdrConstantBuffer.Resource, 0, MapMode.WriteDiscard, MapFlags.None);
@@ -194,7 +201,7 @@ internal static class TonemapPatch
                 SkipQualityReduction = true
             });
 
-        rc.ComputeShader.SetSrvs(0, src, avgLum, bloom, dirt);
+        rc.ComputeShader.SetSrvs(0, src, avgLum, bloom, dirt, HdrResources.GamutWallsBuffer);
         rc.ComputeShader.SetSampler(0, MySamplerStateManager.Default);
 
         rc.ComputeShader.Set(HdrResources.TonemapComputeShader);

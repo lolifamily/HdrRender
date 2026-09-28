@@ -103,6 +103,22 @@ public class Config : INotifyPropertyChanged
         set => SetField(ref field, value);
     } = 1f;
 
+    [Slider(0f, 1f, 0.05f, description: "0 = accurate colors. 1 = saturated colors more vivid, toward P3.")]
+    public float GamutExpansion
+    {
+        get;
+        [UsedImplicitly]
+        set => SetField(ref field, value);
+    } = 0f;
+
+    [Slider(0.7f, 1f, 0.05f, description: "Skin, earth and foliage left out of gamut expansion. Lower = more vivid, warmer skin.")]
+    public float NaturalTones
+    {
+        get;
+        [UsedImplicitly]
+        set => SetField(ref field, value);
+    } = 1f;
+
     [Slider(0f, 0.05f, 0.002f, description: "Raises near-black detail (BT.2390 black lift). 0 = off, best for OLED.")]
     public float BlackLift
     {

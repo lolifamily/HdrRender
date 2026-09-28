@@ -78,5 +78,5 @@ internal static class UiBlendPatch
     }
 
     internal static bool IsScRgb(IRtvBindable rtv) =>
-        rtv?.Rtv is { } view && view.Description.Format == HdrResources.BackbufferFormat;
+        rtv?.Rtv is { Description.Format: HdrResources.BackbufferFormat };
 }

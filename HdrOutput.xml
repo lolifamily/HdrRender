@@ -20,6 +20,7 @@
 Swapchain is upgraded to flip model R16G16B16A16_Float with scRGB color space.
 Lighting, bloom and post-process buffers are upgraded to R16G16B16A16 for full-precision HDR.
 BT.2390 tonemapping keeps the original shadows and midtones at a configurable paper white and extends highlights up to the display peak.
+Optional P3 gamut expansion for more vivid saturated colors.
 Emissive billboards and GPU particles (flames, muzzle flashes, exhaust) can be boosted; diffuse content is untouched.
 UI and in-world overlays (block highlight, gizmos, crosshair) have their own brightness setting.
 Screenshots are captured as OpenEXR (HDR) and tonemapped PNG (SDR) in parallel.

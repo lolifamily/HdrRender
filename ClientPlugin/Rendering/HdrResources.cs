@@ -30,6 +30,9 @@ internal static class HdrResources
     public static IConstantBuffer ChromaticConstantBuffer { get; private set; }
     public static IConstantBuffer OutputConstantBuffer { get; private set; }
 
+    // Per Oklab hue, the gamut walls HdrTonemap.hlsl expand_gamut reads, see GamutWalls.
+    public static ISrvBuffer GamutWallsBuffer { get; private set; }
+
     // The engine's BlendAlphaPremult with rgb scaled by the blend factor, see UiBlendPatch.
     // Owned by the engine's blend state manager, which recreates it on a device reset.
     public static IBlendState UiBlendState { get; private set; }
@@ -73,6 +76,8 @@ internal static class HdrResources
             "HdrOutput.OutputConstants",
             16,
             usage: ResourceUsage.Dynamic);
+
+        GamutWallsBuffer = GamutWalls.CreateBuffer();
 
         var uiBlend = default(BlendStateDescription);
         uiBlend.RenderTarget[0].IsBlendEnabled = true;
@@ -120,6 +125,11 @@ internal static class HdrResources
         {
             MyManagers.Buffers.Dispose(OutputConstantBuffer);
             OutputConstantBuffer = null;
+        }
+        if (GamutWallsBuffer != null)
+        {
+            MyManagers.Buffers.Dispose(GamutWallsBuffer);
+            GamutWallsBuffer = null;
         }
 
         Initialized = false;
